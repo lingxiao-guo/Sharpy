@@ -21,6 +21,93 @@
 #include <torch_tensorrt/core/compiler.h>
 #include <torch_tensorrt/torch_tensorrt.h>
 
+// Debug: save MANO state at each optimization step
+int g_optim_debug_frame = 0;
+static void save_optim_step_debug(
+    const std::string& stage_name, int hand_idx,
+    const torch::Tensor& mano_verts,
+    const torch::Tensor& mano_joints,
+    const torch::Tensor& faces,
+    const torch::Tensor& pc_corrs,
+    const torch::Tensor& mano_corrs,
+    const torch::Tensor& extended_mask,
+    const reclib::IntrinsicParameters& intr,
+    const CpuMat& rgb,
+    const reclib::Configuration& config) {
+
+  if (g_optim_debug_frame >= 3) return;  // only debug first 3 frames
+
+  fs::path debug_dir = fs::path(config["Pipeline"]["data_output_folder"].as<std::string>()) / "optim_debug";
+  if (!fs::exists(debug_dir)) fs::create_directories(debug_dir);
+
+  float fx = intr.focal_x_, fy = intr.focal_y_;
+  float cx = intr.principal_x_, cy = intr.principal_y_;
+
+  torch::Tensor verts_cpu = mano_verts.to(torch::kCPU).contiguous();
+  torch::Tensor joints_cpu = mano_joints.to(torch::kCPU).contiguous();
+  torch::Tensor faces_cpu = faces.to(torch::kCPU).contiguous();
+
+  // Draw on RGB
+  CpuMat overlay = rgb.clone();
+  int n_verts = verts_cpu.sizes()[0];
+  int n_faces = faces_cpu.sizes()[0];
+  int n_joints = joints_cpu.sizes()[0];
+
+  auto va = verts_cpu.accessor<float, 2>();
+  auto fa = faces_cpu.accessor<int, 2>();
+
+  // Project vertices
+  std::vector<cv::Point2f> pts(n_verts);
+  for (int i = 0; i < n_verts; i++) {
+    float z = va[i][2];
+    if (z > 0.001f) {
+      pts[i] = cv::Point2f(fx * va[i][0] / z + cx, fy * va[i][1] / z + cy);
+    } else {
+      pts[i] = cv::Point2f(-1, -1);
+    }
+  }
+
+  // Draw mesh
+  cv::Scalar color = (hand_idx == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 0, 0);
+  for (int f = 0; f < n_faces; f++) {
+    int i0 = fa[f][0], i1 = fa[f][1], i2 = fa[f][2];
+    if (pts[i0].x < 0 || pts[i1].x < 0 || pts[i2].x < 0) continue;
+    cv::line(overlay, cv::Point(pts[i0]), cv::Point(pts[i1]), color, 1, cv::LINE_AA);
+    cv::line(overlay, cv::Point(pts[i1]), cv::Point(pts[i2]), color, 1, cv::LINE_AA);
+    cv::line(overlay, cv::Point(pts[i2]), cv::Point(pts[i0]), color, 1, cv::LINE_AA);
+  }
+
+  // Draw joints
+  auto ja = joints_cpu.accessor<float, 2>();
+  for (int j = 0; j < n_joints; j++) {
+    float z = ja[j][2];
+    if (z > 0.001f) {
+      cv::circle(overlay, cv::Point(fx * ja[j][0] / z + cx, fy * ja[j][1] / z + cy), 5, cv::Scalar(0, 0, 255), -1);
+    }
+  }
+
+  // Save overlay
+  std::stringstream ss;
+  ss << "f" << g_optim_debug_frame << "_hand" << hand_idx << "_" << stage_name << ".png";
+  cv::imwrite((debug_dir / fs::path(ss.str())).string(), overlay);
+
+  // Save correspondence pair stats
+  if (pc_corrs.defined() && mano_corrs.defined() && pc_corrs.sizes()[0] > 0) {
+    torch::Tensor pc_cpu = pc_corrs.to(torch::kCPU);
+    torch::Tensor mc_cpu = mano_corrs.to(torch::kCPU);
+    torch::Tensor dists = (pc_cpu - mc_cpu).norm(2, 1);
+    std::cout << "[OPTIM STEP] " << stage_name << " hand" << hand_idx
+              << " f" << g_optim_debug_frame
+              << " | corr_dist: mean=" << dists.mean().item<float>()
+              << " median=" << std::get<0>(dists.sort()).index({(int)(dists.sizes()[0]/2)}).item<float>()
+              << " max=" << dists.max().item<float>()
+              << " | verts_mean=(" << verts_cpu.index({torch::All, 0}).mean().item<float>()
+              << "," << verts_cpu.index({torch::All, 1}).mean().item<float>()
+              << "," << verts_cpu.index({torch::All, 2}).mean().item<float>() << ")"
+              << std::endl;
+  }
+}
+
 static std::vector<int> apose2joint = {1,  1,  2,  3,  4,  4,  5,  6,
                                        7,  7,  8,  9,  10, 10, 11, 12,
                                        13, 13, 13, 14, 14, 14, 15};
@@ -69,15 +156,54 @@ std::optional<bool> reclib::tracking::HandTracker::register_hand(
     timer_.look_and_reset();
   }
 
+  // Ensure indices are on the same device as the tensors they index (PyTorch 2.6+ requirement)
+  auto vm_dev = state.vertex_map_.device();
   torch::Tensor linearized_pc = state.vertex_map_.index(
-      {state.nonzero_indices_.index({torch::All, 0}),
-       state.nonzero_indices_.index({torch::All, 1}), torch::All});
+      {state.nonzero_indices_.to(vm_dev).index({torch::All, 0}),
+       state.nonzero_indices_.to(vm_dev).index({torch::All, 1}), torch::All});
   torch::Tensor pc_corrs =
-      linearized_pc.index({state.corrs_state_.pc_corr_indices_linearized_});
+      linearized_pc.index({state.corrs_state_.pc_corr_indices_linearized_.to(linearized_pc.device())});
+  auto verts_dev = state.instance_->verts().device();
   torch::Tensor mano_corrs =
-      state.instance_->verts().index({state.corrs_state_.mano_corr_indices_});
+      state.instance_->verts().index({state.corrs_state_.mano_corr_indices_.to(verts_dev)});
 
   torch::Tensor incr_trans = torch::eye(4);
+
+  // Debug: print registration input statistics
+  {
+    static int reg_debug_count = 0;
+    if (reg_debug_count < 4) {
+      torch::Tensor pc_corrs_cpu = pc_corrs.to(torch::kCPU);
+      torch::Tensor mano_corrs_cpu = mano_corrs.to(torch::kCPU);
+      torch::Tensor all_verts_cpu = state.instance_->verts().to(torch::kCPU);
+
+      std::cout << "[REG DEBUG] Hand " << index << " (call #" << reg_debug_count << ")" << std::endl;
+      std::cout << "  Num correspondences: " << pc_corrs_cpu.sizes()[0] << std::endl;
+      std::cout << "  PC corrs (pointcloud): mean=("
+                << pc_corrs_cpu.index({torch::All, 0}).mean().item<float>() << ", "
+                << pc_corrs_cpu.index({torch::All, 1}).mean().item<float>() << ", "
+                << pc_corrs_cpu.index({torch::All, 2}).mean().item<float>() << ")"
+                << " range=[" << pc_corrs_cpu.min().item<float>() << ", " << pc_corrs_cpu.max().item<float>() << "]" << std::endl;
+      std::cout << "  MANO corrs (vertices): mean=("
+                << mano_corrs_cpu.index({torch::All, 0}).mean().item<float>() << ", "
+                << mano_corrs_cpu.index({torch::All, 1}).mean().item<float>() << ", "
+                << mano_corrs_cpu.index({torch::All, 2}).mean().item<float>() << ")"
+                << " range=[" << mano_corrs_cpu.min().item<float>() << ", " << mano_corrs_cpu.max().item<float>() << "]" << std::endl;
+      std::cout << "  ALL MANO verts: mean=("
+                << all_verts_cpu.index({torch::All, 0}).mean().item<float>() << ", "
+                << all_verts_cpu.index({torch::All, 1}).mean().item<float>() << ", "
+                << all_verts_cpu.index({torch::All, 2}).mean().item<float>() << ")"
+                << " range=[" << all_verts_cpu.min().item<float>() << ", " << all_verts_cpu.max().item<float>() << "]" << std::endl;
+
+      // Distance between corresponding points
+      torch::Tensor dists = (pc_corrs_cpu - mano_corrs_cpu).norm(2, 1);
+      std::cout << "  Correspondence distances: mean=" << dists.mean().item<float>()
+                << " median=" << std::get<0>(dists.sort()).index({(int)(dists.sizes()[0]/2)}).item<float>()
+                << " min=" << dists.min().item<float>()
+                << " max=" << dists.max().item<float>() << std::endl;
+      reg_debug_count++;
+    }
+  }
 
   for (unsigned int i = 0; i < reg_config.ui("iterations"); i++) {
     if (reg_config.b("register_rotation")) {
@@ -99,7 +225,7 @@ std::optional<bool> reclib::tracking::HandTracker::register_hand(
 
     // update tensor with updated vertices
     mano_corrs =
-        state.instance_->verts().index({state.corrs_state_.mano_corr_indices_});
+        state.instance_->verts().index({state.corrs_state_.mano_corr_indices_.to(state.instance_->verts().device())});
 
     if (reg_config.b("register_translation")) {
       torch::Tensor trans =
@@ -110,6 +236,38 @@ std::optional<bool> reclib::tracking::HandTracker::register_hand(
       state.instance_->set_trans(
           incr_trans.index({torch::indexing::Slice(0, 3), 3}));
       state.instance_->update(false, true, false, update_meshes);
+    }
+  }
+
+  // Debug: print post-registration state
+  {
+    static int post_reg_count = 0;
+    if (post_reg_count < 4) {
+      torch::Tensor post_verts = state.instance_->verts().to(torch::kCPU);
+      torch::Tensor post_trans = state.instance_->trans().to(torch::kCPU);
+      torch::Tensor post_rot = state.instance_->rot().to(torch::kCPU);
+
+      std::cout << "[REG DEBUG POST] Hand " << index << std::endl;
+      std::cout << "  Trans: " << post_trans << std::endl;
+      std::cout << "  Rot: " << post_rot << std::endl;
+      std::cout << "  Verts after reg: mean=("
+                << post_verts.index({torch::All, 0}).mean().item<float>() << ", "
+                << post_verts.index({torch::All, 1}).mean().item<float>() << ", "
+                << post_verts.index({torch::All, 2}).mean().item<float>() << ")"
+                << " range=[" << post_verts.min().item<float>() << ", " << post_verts.max().item<float>() << "]" << std::endl;
+
+      // Recompute distances after registration
+      torch::Tensor pc_corrs_cpu = linearized_pc.index(
+          {state.corrs_state_.pc_corr_indices_linearized_.to(linearized_pc.device())}).to(torch::kCPU);
+      torch::Tensor mano_corrs_post = post_verts.index(
+          {state.corrs_state_.mano_corr_indices_.to(torch::kCPU)});
+      torch::Tensor dists_post = (pc_corrs_cpu - mano_corrs_post).norm(2, 1);
+      std::cout << "  Post-reg distances: mean=" << dists_post.mean().item<float>()
+                << " median=" << std::get<0>(dists_post.sort()).index({(int)(dists_post.sizes()[0]/2)}).item<float>()
+                << " min=" << dists_post.min().item<float>()
+                << " max=" << dists_post.max().item<float>() << std::endl;
+      std::cout << "  incr_trans:\n" << incr_trans << std::endl;
+      post_reg_count++;
     }
   }
 
@@ -255,12 +413,14 @@ std::optional<bool> reclib::tracking::HandTracker::optimize_hand(
        torch::indexing::Slice(box.index({0}).item<int>(),
                               box.index({2}).item<int>())});
   torch::Tensor corr = network_output_[4].index({(int)index}).contiguous();
+  auto vm_dev2 = state.vertex_map_.device();
+  auto nzi = state.nonzero_indices_.to(vm_dev2);
   torch::Tensor linearized_vertex_map = state.vertex_map_.index(
-      {state.nonzero_indices_.index({torch::All, 0}),
-       state.nonzero_indices_.index({torch::All, 1}), torch::All});
+      {nzi.index({torch::All, 0}),
+       nzi.index({torch::All, 1}), torch::All});
   torch::Tensor linearized_normal_map = state.normal_map_.index(
-      {state.nonzero_indices_.index({torch::All, 0}),
-       state.nonzero_indices_.index({torch::All, 1}), torch::All});
+      {nzi.index({torch::All, 0}),
+       nzi.index({torch::All, 1}), torch::All});
 
   // crop the hand mask and insert it into a container of the
   // original image size -> everything is black except the hand region
@@ -274,12 +434,10 @@ std::optional<bool> reclib::tracking::HandTracker::optimize_hand(
                             torch::indexing::Slice(box.index({0}).item<int>(),
                                                    box.index({2}).item<int>())},
                            mask);
-  // Nvdiffrast is similar to OpenGL and expects images to have flipped
-  // y-coordinates
+  // Nvdiffrast uses OpenGL convention (y=0 at bottom).
+  // Flip the mask and correspondence to match.
   extended_mask = torch::flip(extended_mask, 0).contiguous();
 
-  // Nvdiffrast is similar to OpenGL and expects images to have flipped
-  // y-coordinates
   corr = torch::flip(corr, 1).permute({1, 2, 0}).contiguous() *
          extended_mask.unsqueeze(-1);
 
@@ -294,6 +452,119 @@ std::optional<bool> reclib::tracking::HandTracker::optimize_hand(
   // compute ground-truth correspondence image for Nvdiffrast
   torch::Tensor colors = mano_corr_space_.clone().to(dev);
   colors = colors.index({torch::None, "..."});
+
+  // Debug: check correspondence space and rendered vs predicted corrs
+  {
+    static int corr_debug_count = 0;
+    if (corr_debug_count < 2) {
+      torch::Tensor colors_cpu = mano_corr_space_.to(torch::kCPU);
+      torch::Tensor corr_cpu = corr.to(torch::kCPU);
+      torch::Tensor mask_cpu = extended_mask.to(torch::kCPU);
+
+      std::cout << "[CORR DEBUG] Hand " << index << std::endl;
+      std::cout << "  mano_corr_space: shape=" << colors_cpu.sizes()
+                << " min=" << colors_cpu.min().item<float>()
+                << " max=" << colors_cpu.max().item<float>()
+                << " mean=" << colors_cpu.mean().item<float>() << std::endl;
+      for (int c = 0; c < 3; c++) {
+        auto ch = colors_cpu.index({torch::All, c});
+        std::cout << "    ch" << c << ": min=" << ch.min().item<float>()
+                  << " max=" << ch.max().item<float>()
+                  << " mean=" << ch.mean().item<float>() << std::endl;
+      }
+
+      // Network predicted corr (after mask and flip)
+      torch::Tensor corr_masked = corr_cpu * mask_cpu.unsqueeze(-1);
+      torch::Tensor corr_nonzero = corr_cpu.index({mask_cpu > 0});
+      if (corr_nonzero.sizes()[0] > 0) {
+        corr_nonzero = corr_nonzero.reshape({-1, 3});
+        std::cout << "  Network corr (masked, non-zero): count=" << corr_nonzero.sizes()[0] << std::endl;
+        for (int c = 0; c < 3; c++) {
+          auto ch = corr_nonzero.index({torch::All, c});
+          std::cout << "    ch" << c << ": min=" << ch.min().item<float>()
+                    << " max=" << ch.max().item<float>()
+                    << " mean=" << ch.mean().item<float>() << std::endl;
+        }
+      } else {
+        std::cout << "  Network corr: NO non-zero pixels in mask!" << std::endl;
+      }
+      corr_debug_count++;
+    }
+  }
+
+  // Debug: print actual VP matrix and mask position
+  {
+    static int vp_debug = 0;
+    if (vp_debug < 2) {
+      torch::Tensor vp_cpu = VP.to(torch::kCPU);
+      std::cout << "[VP MATRIX] hand " << index << ":\n" << vp_cpu << std::endl;
+
+      // Print mask stats
+      torch::Tensor mask_cpu = extended_mask.to(torch::kCPU);
+      auto mask_nonzero = torch::nonzero(mask_cpu);
+      if (mask_nonzero.sizes()[0] > 0) {
+        std::cout << "[MASK POS] rows: ["
+                  << mask_nonzero.index({torch::All, 0}).min().item<int>() << ", "
+                  << mask_nonzero.index({torch::All, 0}).max().item<int>() << "]"
+                  << " cols: ["
+                  << mask_nonzero.index({torch::All, 1}).min().item<int>() << ", "
+                  << mask_nonzero.index({torch::All, 1}).max().item<int>() << "]"
+                  << " total=" << mask_nonzero.sizes()[0] << " pixels" << std::endl;
+      }
+      vp_debug++;
+    }
+  }
+
+  // Debug: check projection sanity
+  {
+    static int proj_debug_count = 0;
+    if (proj_debug_count < 4) {
+      torch::Tensor verts_cpu = state.instance_->verts().to(torch::kCPU);
+      torch::Tensor vp_cpu = VP.to(torch::kCPU);
+      // Project MANO vertices to screen space
+      torch::Tensor verts_homo = torch::cat({verts_cpu, torch::ones({verts_cpu.sizes()[0], 1})}, 1);
+      torch::Tensor verts_clip = torch::matmul(verts_homo, vp_cpu.transpose(0, 1));
+      torch::Tensor verts_ndc = verts_clip.index({torch::All, torch::indexing::Slice(0, 2)}) /
+                                verts_clip.index({torch::All, torch::indexing::Slice(3, 4)});
+      // NDC to pixel: x_px = (ndc_x+1)/2 * W, y_px = (ndc_y+1)/2 * H
+      float W = (float)intrinsics_.image_width_;
+      float H = (float)intrinsics_.image_height_;
+      torch::Tensor verts_px = torch::stack({
+          (verts_ndc.index({torch::All, 0}) + 1.f) / 2.f * W,
+          (verts_ndc.index({torch::All, 1}) + 1.f) / 2.f * H}, 1);
+
+      std::cout << "[PROJ DEBUG] Hand " << index << " (stage " << stage << ")" << std::endl;
+      std::cout << "  Image size: " << W << "x" << H << std::endl;
+      std::cout << "  Verts 3D mean: (" << verts_cpu.index({torch::All, 0}).mean().item<float>()
+                << ", " << verts_cpu.index({torch::All, 1}).mean().item<float>()
+                << ", " << verts_cpu.index({torch::All, 2}).mean().item<float>() << ")" << std::endl;
+      std::cout << "  Projected pixel mean: (" << verts_px.index({torch::All, 0}).mean().item<float>()
+                << ", " << verts_px.index({torch::All, 1}).mean().item<float>() << ")" << std::endl;
+      std::cout << "  Projected pixel range x: [" << verts_px.index({torch::All, 0}).min().item<float>()
+                << ", " << verts_px.index({torch::All, 0}).max().item<float>() << "]" << std::endl;
+      std::cout << "  Projected pixel range y: [" << verts_px.index({torch::All, 1}).min().item<float>()
+                << ", " << verts_px.index({torch::All, 1}).max().item<float>() << "]" << std::endl;
+      std::cout << "  Box: [" << box.index({0}).item<float>() << ", " << box.index({1}).item<float>()
+                << ", " << box.index({2}).item<float>() << ", " << box.index({3}).item<float>() << "]" << std::endl;
+      std::cout << "  Mask sum: " << extended_mask.sum().item<float>() << " pixels" << std::endl;
+      proj_debug_count++;
+    }
+  }
+
+  // Debug: save pre-optimization state
+  if (stage == 0) {
+    torch::NoGradGuard guard;
+    auto t_pre = reclib::tracking::torch_lbs_pca_anatomic(
+        state.instance_->model, trans, rot, shape, pca,
+        reclib::tracking::compute_apose_matrix(state.instance_->model, shape), false);
+    torch::Tensor pc_pre = linearized_vertex_map.index(
+        {state.corrs_state_.pc_corr_indices_linearized_.to(linearized_vertex_map.device())}).to(torch::kCPU);
+    torch::Tensor mc_pre = t_pre.first.index(
+        {state.corrs_state_.mano_corr_indices_.to(t_pre.first.device())}).to(torch::kCPU);
+    save_optim_step_debug("pre_optim", index, t_pre.first, t_pre.second,
+        state.instance_->model.faces, pc_pre, mc_pre,
+        extended_mask, intrinsics_, rgb_, config_);
+  }
 
   // initialize Nvdiffrast
   int device = reclib::getDevice();
@@ -444,6 +715,20 @@ std::optional<bool> reclib::tracking::HandTracker::optimize_hand(
       rot.set_requires_grad(false);
       shape.set_requires_grad(false);
 
+      // Debug: save MANO state after Stage 0 (L-BFGS initialization)
+      {
+        torch::NoGradGuard guard;
+        auto t0 = reclib::tracking::torch_lbs_pca_anatomic(
+            state.instance_->model, trans, rot, shape, pca, cross_matrix, false);
+        torch::Tensor pc_corrs_s0 = linearized_vertex_map.index(
+            {state.corrs_state_.pc_corr_indices_linearized_.to(linearized_vertex_map.device())}).to(torch::kCPU);
+        torch::Tensor mano_corrs_s0 = t0.first.index(
+            {state.corrs_state_.mano_corr_indices_.to(t0.first.device())}).to(torch::kCPU);
+        save_optim_step_debug("stage0_lbfgs", index, t0.first, t0.second,
+            state.instance_->model.faces, pc_corrs_s0, mano_corrs_s0,
+            extended_mask, intrinsics_, rgb_, config_);
+      }
+
       state.stage_ = 2;
     }
 
@@ -590,6 +875,39 @@ std::optional<bool> reclib::tracking::HandTracker::optimize_hand(
       rot.set_requires_grad(false);
       shape.set_requires_grad(false);
       trans.set_requires_grad(false);
+
+      // Debug: save MANO state after Stage 1 (Adam refinement)
+      {
+        torch::NoGradGuard guard;
+        auto t1 = reclib::tracking::torch_lbs_anatomic(
+            state.instance_->model, best_trans, best_rot, best_shape, best_apose,
+            cross_matrix, false);
+        torch::Tensor pc_corrs_s1 = linearized_vertex_map.index(
+            {state.corrs_state_.pc_corr_indices_linearized_.to(linearized_vertex_map.device())}).to(torch::kCPU);
+        torch::Tensor mano_corrs_s1 = t1.first.index(
+            {state.corrs_state_.mano_corr_indices_.to(t1.first.device())}).to(torch::kCPU);
+        save_optim_step_debug("stage1_adam", index, t1.first, t1.second,
+            state.instance_->model.faces, pc_corrs_s1, mano_corrs_s1,
+            extended_mask, intrinsics_, rgb_, config_);
+
+        // Also print the pose parameters to check if they changed
+        std::cout << "[OPTIM PARAMS] hand" << index << " f" << g_optim_debug_frame
+                  << " | best_apose norm=" << best_apose.norm().item<float>()
+                  << " max=" << best_apose.abs().max().item<float>()
+                  << " | pca norm=" << pca.norm().item<float>()
+                  << " | rot=" << best_rot.to(torch::kCPU)
+                  << " | trans=" << best_trans.to(torch::kCPU)
+                  << std::endl;
+      }
+
+      // Restore best parameters found during optimization
+      {
+        torch::NoGradGuard guard;
+        apose = best_apose.clone();
+        trans = best_trans.clone();
+        rot = best_rot.clone();
+        shape = best_shape.clone();
+      }
 
       // compute PCA since pose updates are stored as a PCA within the instance
       pca = torch::matmul(state.instance_->model.hand_comps.inverse(),
@@ -768,6 +1086,54 @@ reclib::tracking::HandTracker::rasterizer_loss(
       reclib::dnn::antialias(interp_out[0], rast_out[0], verts_clip, pos_idx);
   // predicted MANO colors (aka canonical coordinates) from Nvdiffrast
   torch::Tensor color_pred = antialias_out[0].squeeze(0);
+
+  // Debug: save rendered MANO vs mask overlay
+  {
+    static int rast_debug_count = 0;
+    if (rast_debug_count < 4) {
+      fs::path debug_dir = config_["Pipeline"]["data_output_folder"].as<std::string>();
+      fs::path rast_dir = debug_dir / "rasterizer_debug";
+      if (!fs::exists(rast_dir)) fs::create_directories(rast_dir);
+
+      // Rendered MANO silhouette (binary)
+      torch::Tensor rendered_sil = (color_pred.sum(2) > 0).to(torch::kFloat32).to(torch::kCPU);
+      // Network mask (already y-flipped)
+      torch::Tensor mask_vis = extended_mask.to(torch::kFloat32).to(torch::kCPU);
+
+      // Debug: print exact pixel positions of mask and rendered MANO
+      auto mask_nz = torch::nonzero(mask_vis);
+      auto rend_nz = torch::nonzero(rendered_sil);
+      if (mask_nz.sizes()[0] > 0) {
+        std::cout << "[OVERLAY] Mask rows: [" << mask_nz.index({torch::All, 0}).min().item<int>()
+                  << ", " << mask_nz.index({torch::All, 0}).max().item<int>() << "]" << std::endl;
+      }
+      if (rend_nz.sizes()[0] > 0) {
+        std::cout << "[OVERLAY] Rendered rows: [" << rend_nz.index({torch::All, 0}).min().item<int>()
+                  << ", " << rend_nz.index({torch::All, 0}).max().item<int>() << "]" << std::endl;
+      }
+
+      // Save as 3-channel overlay: R=mask, G=rendered, B=0
+      torch::Tensor overlay = torch::zeros({h, w, 3});
+      overlay.index({torch::All, torch::All, 0}) = mask_vis;      // red = network mask
+      overlay.index({torch::All, torch::All, 1}) = rendered_sil;  // green = rendered MANO
+      CpuMat overlay_cv = reclib::dnn::torch2cv(overlay);
+      overlay_cv.convertTo(overlay_cv, CV_8UC3, 255.0);
+
+      std::stringstream ss;
+      ss << "overlay_hand" << (int)state.instance_->model.hand_type << "_" << rast_debug_count << ".png";
+      cv::imwrite((rast_dir / fs::path(ss.str())).string(), overlay_cv);
+
+      // Also save the rendered correspondence image
+      torch::Tensor color_vis = color_pred.to(torch::kCPU).contiguous();
+      CpuMat color_cv = reclib::dnn::torch2cv(color_vis);
+      color_cv.convertTo(color_cv, CV_8UC3, 255.0);
+      std::stringstream ss2;
+      ss2 << "rendered_corr_hand" << (int)state.instance_->model.hand_type << "_" << rast_debug_count << ".png";
+      cv::imwrite((rast_dir / fs::path(ss2.str())).string(), color_cv);
+
+      rast_debug_count++;
+    }
+  }
 
   // compute nonzero pixels within prediction
   torch::Tensor positive_samples_pred = (color_pred.sum(2) > 0).sum();

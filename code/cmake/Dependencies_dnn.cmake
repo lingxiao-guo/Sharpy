@@ -60,9 +60,9 @@ if((NOT Torch_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_I
 		FetchContent_Declare(
 			Torch
 
-			URL "https://download.pytorch.org/libtorch/cu113/libtorch-cxx11-abi-shared-with-deps-1.11.0%2Bcu113.zip"
-
+			# URL "https://download.pytorch.org/libtorch/cu113/libtorch-cxx11-abi-shared-with-deps-1.11.0%2Bcu113.zip"
 			# URL "https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu118.zip"
+			URL "https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.6.0%2Bcu124.zip"
 			CMAKE_ARGS "-DCMAKE_INSTALL_PREFIX=${Torch_BASE_PATH}/install"
 			PREFIX "${Torch_BASE_PATH}"
 			DOWNLOAD_DIR "${Torch_BASE_PATH}/download"
@@ -83,6 +83,10 @@ if((NOT Torch_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_I
 	LibraryHelper(TORCH_LIBRARIES libtorch_global_deps.so "${Torch_BASE_PATH}/source/lib" Torch_FOUND)
 	LibraryHelper(TORCH_LIBRARIES libtorchbind_test.so "${Torch_BASE_PATH}/source/lib" Torch_FOUND)
 
+	# Add Torch include directories for manual installation
+	IncludeHelper(TORCH_INCLUDE_DIRS "torch/torch.h" "${Torch_BASE_PATH}/source/include/torch/csrc/api/include" Torch_FOUND)
+	IncludeHelper(TORCH_INCLUDE_DIRS "torch/script.h" "${Torch_BASE_PATH}/source/include/" Torch_FOUND)
+
 	if(NOT Torch_FOUND)
 		message(FATAL_ERROR "Could not find Torch.")
 	endif()
@@ -95,23 +99,24 @@ PackageHelper(Torch "${Torch_FOUND}" "${TORCH_INCLUDE_DIRS}" "${TORCH_LIBRARIES}
 # # -----------------------------------------------------
 # # -----------------------------------------------------
 
-# TensorRt 8.4.2-1 with cuda 11.6
+# TensorRT 10.x with CUDA 12
 if(UNIX)
-	set(TensorRT_BASE_PATH "") # system-wide
+	set(TensorRT_BASE_PATH "/usr") # system-wide
 elseif(WIN32)
 	message(FATAL_ERROR "Win32 TensorRT not configured. Please check the CMakeLists.txt file and specify the required files.")
 endif()
 
 if(UNIX)
-	LibraryHelper(TensorRT_LIBRARIES libnvinfer_plugin.so "${TensorRT_BASE_PATH}/lib" TensorRT_FOUND)
-	LibraryHelper(TensorRT_LIBRARIES libnvparsers.so "${TensorRT_BASE_PATH}/lib" TensorRT_FOUND)
-	LibraryHelper(TensorRT_LIBRARIES libnvinfer.so "${TensorRT_BASE_PATH}/lib" TensorRT_FOUND)
+	LibraryHelper(TensorRT_LIBRARIES libnvinfer_plugin.so "${TensorRT_BASE_PATH}/lib;${TensorRT_BASE_PATH}/lib/x86_64-linux-gnu" TensorRT_FOUND)
+	# libnvparsers was removed in TensorRT 10.x and is not used by this project
+	# LibraryHelper(TensorRT_LIBRARIES libnvparsers.so "${TensorRT_BASE_PATH}/lib" TensorRT_FOUND)
+	LibraryHelper(TensorRT_LIBRARIES libnvinfer.so "${TensorRT_BASE_PATH}/lib;${TensorRT_BASE_PATH}/lib/x86_64-linux-gnu" TensorRT_FOUND)
 	message("TENSORRRRRRT: ${TensorRT_LIBRARIES}")
 elseif(WIN32)
 	message(FATAL_ERROR "Win32 Torch-TensorRT not configured. Please check the CMakeLists.txt file and specify the required files.")
 endif()
 
-IncludeHelper(TensorRT_INCLUDE_DIRS "NvInfer.h" "${TensorRT_BASE_PATH}/include" TensorRT_FOUND)
+IncludeHelper(TensorRT_INCLUDE_DIRS "NvInfer.h" "${TensorRT_BASE_PATH}/include;${TensorRT_BASE_PATH}/include/x86_64-linux-gnu" TensorRT_FOUND)
 
 message(STATUS "Found: ${TensorRT_FOUND}")
 
@@ -147,7 +152,8 @@ if((NOT Torch_TensorRT_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE
 		message("Manually download, configure and build Torch_TensorRT library...")
 		FetchContent_Declare(
 			Torch_TensorRT
-			URL "https://github.com/pytorch/TensorRT/releases/download/v1.1.0/libtorchtrt-v1.1.0-cudnn8.2-tensorrt8.2-cuda11.3-libtorch1.11.0.tar.gz"
+			# URL "https://github.com/pytorch/TensorRT/releases/download/v1.1.0/libtorchtrt-v1.1.0-cudnn8.2-tensorrt8.2-cuda11.3-libtorch1.11.0.tar.gz"
+			URL "https://github.com/pytorch/TensorRT/releases/download/v2.6.0/libtorchtrt-2.6.0-tensorrt10.7.0.post1-cuda124-libtorch2.6.0-x86_64-linux.tar.gz"
 			CMAKE_ARGS "-DCMAKE_INSTALL_PREFIX=${Torch_TensorRT_BASE_PATH}/install"
 			PREFIX "${Torch_TensorRT_BASE_PATH}"
 			DOWNLOAD_DIR "${Torch_TensorRT_BASE_PATH}/download"

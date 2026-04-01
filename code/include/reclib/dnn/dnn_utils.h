@@ -9,8 +9,8 @@
 #include <torch/torch.h>
 
 namespace torch {
-extern torch::indexing::Slice All;
-extern c10::nullopt_t None;
+extern const torch::indexing::Slice All;
+using at::indexing::None;
 
 }  // namespace torch
 

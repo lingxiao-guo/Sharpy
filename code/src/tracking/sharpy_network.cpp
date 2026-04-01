@@ -115,7 +115,7 @@ std::vector<torch::Tensor> reclib::tracking::HandTracker::reduce(
       torch::Tensor t = torch::cat(stacked, 0);
       out.push_back(t);
     } else {
-      out.push_back(in[i].index({ind}));
+      out.push_back(in[i].index({ind.to(in[i].device())}));
     }
   }
   return out;
@@ -349,6 +349,51 @@ void reclib::tracking::HandTracker::detect(cv::Rect crop_factor) {
   }
   // store network output
   network_output_ = out_processed;
+
+  // Debug: save network outputs for inspection
+  {
+    static int debug_frame = 0;
+    fs::path debug_dir = config_["Pipeline"]["data_output_folder"].as<std::string>();
+    fs::path net_debug_dir = debug_dir / "network_debug";
+    if (!fs::exists(net_debug_dir)) {
+      fs::create_directories(net_debug_dir);
+    }
+    // Save for first 5 frames
+    if (debug_frame < 5) {
+      // out_processed: [0]=classes, [1]=scores, [2]=boxes, [3]=masks, [4]=corrs
+      // Save mask as image
+      for (int h = 0; h < (int)out_processed[3].sizes()[0]; h++) {
+        torch::Tensor mask_t = out_processed[3].index({h}).to(torch::kCPU).contiguous();
+        CpuMat mask_cv = reclib::dnn::torch2cv(mask_t);
+        mask_cv.convertTo(mask_cv, CV_8UC1, 255.0);
+        std::stringstream ss;
+        ss << "frame" << debug_frame << "_hand" << h << "_mask.png";
+        cv::imwrite((net_debug_dir / fs::path(ss.str())).string(), mask_cv);
+
+        // Save correspondence image (3-channel HSV-like)
+        torch::Tensor corr_t = out_processed[4].index({h}).to(torch::kCPU).permute({1, 2, 0}).contiguous();
+        CpuMat corr_cv = reclib::dnn::torch2cv(corr_t);
+        corr_cv.convertTo(corr_cv, CV_8UC3, 255.0);
+        std::stringstream ss2;
+        ss2 << "frame" << debug_frame << "_hand" << h << "_corr.png";
+        cv::imwrite((net_debug_dir / fs::path(ss2.str())).string(), corr_cv);
+
+        // Print bounding box
+        torch::Tensor box_t = out_processed[2].index({h}).to(torch::kCPU);
+        std::cout << "[DEBUG] Frame " << debug_frame << " hand " << h
+                  << " box: [" << box_t[0].item<float>() << ", " << box_t[1].item<float>()
+                  << ", " << box_t[2].item<float>() << ", " << box_t[3].item<float>() << "]"
+                  << " class: " << out_processed[0].index({h}).to(torch::kCPU).item<int>()
+                  << " score: " << out_processed[1].index({h}).to(torch::kCPU).item<float>()
+                  << std::endl;
+      }
+      // Also save the RGB input
+      std::stringstream ss3;
+      ss3 << "frame" << debug_frame << "_rgb.png";
+      cv::imwrite((net_debug_dir / fs::path(ss3.str())).string(), rgb_);
+    }
+    debug_frame++;
+  }
 
   if (debug_) {
     std::cout << "---- Untransforming network output: "

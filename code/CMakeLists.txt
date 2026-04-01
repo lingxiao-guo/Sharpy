@@ -12,7 +12,7 @@ option(WITH_VCPKG "Whether to use dependencies from vcpkg or search manually" OF
 option(BUILD_EXAMPLES "Whether to build additional code examples" ON)
 option(BUILD_TESTS "Whether to build additional tests" OFF)
 option(INSTALL_MISSING_REQUIRED_DEPENDENCIES "Automatically download and install missing dependencies that are required" ON)
-option(CUDA_ARCHITECTURE "The architecture name of your NVIDIA GPU, e.g. Pascal" "Ampere")
+option(CUDA_ARCHITECTURE "The architecture name of your NVIDIA GPU, e.g. Pascal" "Ada")
 option(WINDOWS_ARCHITECTURE "Either 32Bit or 64Bit" "64Bit")
 option(DEBUG_MODE "The debug mode enables assertions and further checks that would consume computation time otherwise" ON)
 option(DEBUG_CMAKE_FLAGS "Whether to disable compiler optimization and instead insert debug flags" ON)
@@ -54,7 +54,7 @@ set(PROJECT_LANGUAGES CXX CUDA)
 set(PROJECT_NAME reconstruction-lib)
 
 set(WINDOWS_ARCHITECTURE "64Bit") # Either 32Bit or 64Bit
-set(CMAKE_CUDA_ARCHITECTURES 86) # compute capability of GPU
+set(CMAKE_CUDA_ARCHITECTURES 89) # compute capability of GPU (89 = Ada/RTX 4090)
 
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -150,7 +150,7 @@ endif()
 
 # Set C++ standard required for CUDA
 if(NOT DEFINED CMAKE_CUDA_STANDARD)
-	set(CMAKE_CUDA_STANDARD 14)
+	set(CMAKE_CUDA_STANDARD 17)
 	set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
 
@@ -191,7 +191,7 @@ if(UNIX)
 	if(NOT DEBUG_CMAKE_FLAGS)
 		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Ofast")
 	else()
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -G")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g")
 		set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -G")
 	endif()
 

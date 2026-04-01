@@ -49,25 +49,30 @@ void reclib::tracking::HandTracker::compute_matches(
 
   // clone creates a new memory pool for the tensor,
   // creating a deep copy without memory holes.
+  // PyTorch 2.6+ requires indices on the same device as the indexed tensor
+  auto nzi_vm = state.nonzero_indices_.to(state.vertex_map_.device());
   torch::Tensor linearized_pc =
       state.vertex_map_
-          .index({state.nonzero_indices_.index({torch::All, 0}),
-                  state.nonzero_indices_.index({torch::All, 1}), torch::All})
+          .index({nzi_vm.index({torch::All, 0}),
+                  nzi_vm.index({torch::All, 1}), torch::All})
           .clone();
+  auto nzi_corr = state.nonzero_indices_.to(state.corr_.device());
   torch::Tensor linearized_pc_canonicals =
       state.corr_
-          .index({state.nonzero_indices_.index({torch::All, 0}),
-                  state.nonzero_indices_.index({torch::All, 1}), torch::All})
+          .index({nzi_corr.index({torch::All, 0}),
+                  nzi_corr.index({torch::All, 1}), torch::All})
           .clone();
+  auto nzi_nm = state.nonzero_indices_.to(state.normal_map_.device());
   torch::Tensor linearized_pc_normals =
       state.normal_map_
-          .index({state.nonzero_indices_.index({torch::All, 0}),
-                  state.nonzero_indices_.index({torch::All, 1}), torch::All})
+          .index({nzi_nm.index({torch::All, 0}),
+                  nzi_nm.index({torch::All, 1}), torch::All})
           .clone();
+  auto nzi_cs = state.nonzero_indices_.to(state.corr_segmented_.device());
   torch::Tensor linearized_segmentation =
       state.corr_segmented_
-          .index({state.nonzero_indices_.index({torch::All, 0}),
-                  state.nonzero_indices_.index({torch::All, 1})})
+          .index({nzi_cs.index({torch::All, 0}),
+                  nzi_cs.index({torch::All, 1})})
           .clone();
   torch::Tensor mano_segmentation =
       reclib::tracking::sharpy::batch_corr2seg(mano_corr_space_).clone();

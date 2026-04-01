@@ -24,9 +24,9 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 set(OpenCV_BASE_PATH "${PROJECT_SOURCE_DIR}/external/thirdparty/opencv")
 
 if(UNIX)
-    find_package(OpenCV 4.5 QUIET HINTS "${OpenCV_BASE_PATH}/install/lib/cmake/opencv4")
+    find_package(OpenCV 4.10 QUIET HINTS "${OpenCV_BASE_PATH}/install/lib/cmake/opencv4")
 elseif(WIN32)
-    find_package(OpenCV 4.5 QUIET HINTS "${OpenCV_BASE_PATH}/build")
+    find_package(OpenCV 4.10 QUIET HINTS "${OpenCV_BASE_PATH}/build")
 endif()
 
 if((NOT OPENCV_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_INSTALLATION)
@@ -40,7 +40,7 @@ if((NOT OPENCV_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_
         FetchContent_Declare(
             OpenCVContrib
             GIT_REPOSITORY "https://github.com/opencv/opencv_contrib"
-            GIT_TAG "4.5.0"
+            GIT_TAG "4.10.0"
             PREFIX "${OpenCV_CONTRIB_BASE_PATH}"
             DOWNLOAD_DIR "${OpenCV_CONTRIB_BASE_PATH}/download"
             SOURCE_DIR "${OpenCV_CONTRIB_BASE_PATH}/source"
@@ -57,7 +57,7 @@ if((NOT OPENCV_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_
         FetchContent_Declare(
             OpenCV
             GIT_REPOSITORY "https://github.com/opencv/opencv"
-            GIT_TAG "4.5.0"
+            GIT_TAG "4.10.0"
             PREFIX "${OpenCV_BASE_PATH}"
             DOWNLOAD_DIR "${OpenCV_BASE_PATH}/download"
             SOURCE_DIR "${OpenCV_BASE_PATH}/source"
@@ -106,7 +106,7 @@ if((NOT OPENCV_FOUND AND INSTALL_MISSING_REQUIRED_DEPENDENCIES) OR FORCE_MANUAL_
         set(OpenCV_DIR "${OpenCV_BASE_PATH}/build")
     endif()
 
-    find_package(OpenCV 4.5.0 QUIET REQUIRED PATHS ${OpenCV_DIR})
+    find_package(OpenCV 4.10.0 QUIET REQUIRED PATHS ${OpenCV_DIR})
 
     unset(OpenCV_BASE_PATH)
 endif()

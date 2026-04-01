@@ -270,6 +270,98 @@ void initialize_globals() {
       config["Pipeline"]["data_output_folder"].as<std::string>());
 }
 
+void save_reconstruction_frame() {
+  if (rgb_float.rows == 0) return;
+
+  static int save_frame = 0;
+  fs::path out_dir = fs::path(config["Pipeline"]["data_output_folder"].as<std::string>()) / "reconstruction";
+  if (!fs::exists(out_dir)) {
+    fs::create_directories(out_dir);
+  }
+
+  // Get camera intrinsics
+  auto intr = loader->get_intrinsics();
+  float fx = intr.focal_x_;
+  float fy = intr.focal_y_;
+  float cx = intr.principal_x_;
+  float cy = intr.principal_y_;
+  int W = intr.image_width_;
+  int H = intr.image_height_;
+
+  // Convert rgb_float (which is RGB, [0,1]) back to BGR uint8 for saving
+  // rgb_float may be y-flipped for OpenGL display, so flip it back
+  CpuMat overlay;
+  CpuMat rgb_bgr;
+  cv::cvtColor(rgb_float, rgb_bgr, cv::COLOR_RGB2BGR);
+  rgb_bgr.convertTo(overlay, CV_8UC3, 255.0);
+  cv::flip(overlay, overlay, 0);  // flip vertically to correct OpenGL convention
+
+  // For each hand, project MANO mesh edges onto image
+  for (unsigned int h = 0; h < tracker->hand_states().size(); h++) {
+    auto& state = tracker->hand_states()[h];
+    if (!state.instance_) continue;
+
+    torch::Tensor verts_t = state.instance_->verts().to(torch::kCPU).contiguous();
+    torch::Tensor faces_t = state.instance_->model.faces.to(torch::kCPU).contiguous();
+
+    int n_verts = verts_t.sizes()[0];
+    int n_faces = faces_t.sizes()[0];
+
+    if (save_frame < 2) {
+      std::cout << "[SAVE DEBUG] hand " << h << " verts: " << verts_t.sizes()
+                << " dtype=" << verts_t.dtype()
+                << " range=[" << verts_t.min().item<float>() << "," << verts_t.max().item<float>() << "]"
+                << " faces: " << faces_t.sizes() << " dtype=" << faces_t.dtype()
+                << " range=[" << faces_t.min().item<int>() << "," << faces_t.max().item<int>() << "]"
+                << std::endl;
+    }
+
+    // Project all vertices to 2D
+    std::vector<cv::Point2f> pts2d(n_verts);
+    auto verts_a = verts_t.accessor<float, 2>();
+    for (int i = 0; i < n_verts; i++) {
+      float x = verts_a[i][0];
+      float y = verts_a[i][1];
+      float z = verts_a[i][2];
+      if (z > 0.001f) {
+        pts2d[i] = cv::Point2f(fx * x / z + cx, fy * y / z + cy);
+      } else {
+        pts2d[i] = cv::Point2f(-1, -1);
+      }
+    }
+
+    // Draw mesh edges (from face triangles)
+    cv::Scalar color = (h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 0, 0); // green for right, blue for left
+    auto faces_a = faces_t.accessor<int, 2>();
+    for (int f = 0; f < n_faces; f++) {
+      int i0 = faces_a[f][0], i1 = faces_a[f][1], i2 = faces_a[f][2];
+      if (pts2d[i0].x < 0 || pts2d[i1].x < 0 || pts2d[i2].x < 0) continue;
+      cv::line(overlay, cv::Point(pts2d[i0]), cv::Point(pts2d[i1]), color, 1, cv::LINE_AA);
+      cv::line(overlay, cv::Point(pts2d[i1]), cv::Point(pts2d[i2]), color, 1, cv::LINE_AA);
+      cv::line(overlay, cv::Point(pts2d[i2]), cv::Point(pts2d[i0]), color, 1, cv::LINE_AA);
+    }
+
+    // Draw joints
+    torch::Tensor joints_t = state.instance_->joints().to(torch::kCPU);
+    auto joints_a = joints_t.accessor<float, 2>();
+    int n_joints = joints_t.sizes()[0];
+    for (int j = 0; j < n_joints; j++) {
+      float x = joints_a[j][0], y = joints_a[j][1], z = joints_a[j][2];
+      if (z > 0.001f) {
+        cv::Point2f pt(fx * x / z + cx, fy * y / z + cy);
+        cv::circle(overlay, cv::Point(pt), 4, cv::Scalar(0, 0, 255), -1);
+      }
+    }
+  }
+
+  // Save
+  std::stringstream ss;
+  ss << "frame_" << std::setw(4) << std::setfill('0') << save_frame << ".png";
+  cv::imwrite((out_dir / fs::path(ss.str())).string(), overlay);
+  std::cout << "Saved: " << (out_dir / fs::path(ss.str())).string() << std::endl;
+  save_frame++;
+}
+
 void update_config() {
   std::optional<reclib::datasets::MetaData> d = loader->get_metadata();
   std::string seq = "unknown";
@@ -452,6 +544,27 @@ void update_tracker() {
   if (visualize_uncertainty) {
     tracker->visualize_uncertainty();
     visualize_uncertainty = false;
+  }
+
+  // Save reconstruction overlay for every processed frame
+  if (received_frame) {
+    // Debug: print vertex stats at save time
+    for (unsigned int h = 0; h < tracker->hand_states().size(); h++) {
+      auto& st = tracker->hand_states()[h];
+      if (st.instance_) {
+        torch::Tensor v = st.instance_->verts().to(torch::kCPU);
+        torch::Tensor p = st.instance_->params.to(torch::kCPU);
+        std::cout << "[SAVE VERTS] hand" << h
+                  << " verts_range=[" << v.min().item<float>() << "," << v.max().item<float>() << "]"
+                  << " params_norm=" << p.norm().item<float>()
+                  << " stage=" << st.stage_
+                  << std::endl;
+      }
+    }
+    save_reconstruction_frame();
+    // Increment the optimization debug frame counter (defined in sharpy_optimization.cpp)
+    extern int g_optim_debug_frame;
+    g_optim_debug_frame++;
   }
 }
 

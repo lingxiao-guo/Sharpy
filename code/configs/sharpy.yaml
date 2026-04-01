@@ -2,24 +2,24 @@ Dataset:
   # Name of the dataset 
   # this is used within the Dataset loader to load dataset-specific data
   name: "h2o"
-  # path to the root directory of the dataset or 
+  # path to the root directory of the dataset or
   # if it is just a sequence
   # the sequence path
-  path: "<path-to-sharpy-repository>/data/h2o/"
+  path: "/home/lingxiao/data/projects/lingxiao/sharpy/data/h2o/"
   # txt file which contains all images that are used for evaluation
   # Example of a line within the file in H2O:
-  # subject3/h2/7/cam4/rgb/000000.png 
+  # subject3/h2/7/cam4/rgb/000000.png
   # image_file: "/path/to/datasets/h2o/label_split/pose_test_manual.txt"
   # image_file: "/path/to/datasets/h2o/label_split/pose_train_cam0to4.txt"
 
   # txt file which contains all video sequences that are loaded for evaluation
   # Example of a line within the file in H2O:
   # subject3/h2/7/cam4
-  sequence_file: "<path-to-sharpy-repository>/data/h2o/label_split/pose_train_tracking.txt"
+  sequence_file: "/home/lingxiao/data/projects/lingxiao/sharpy/data/h2o/label_split/pose_train_tracking.txt"
   # json file that contains manually
   # precomputed PCA components of the MANO model
   # if you want to use the standard PCA parameters instead, disable the "use_calculated_pca" flag
-  pca_file: "<path-to-sharpy-repository>/data/h2o/hoh_pca_filtered.json"
+  pca_file: "/home/lingxiao/data/projects/lingxiao/sharpy/data/h2o/hoh_pca_filtered.json"
   # Only used if tracking_mode=False and debug=True
   # number of frames that are loaded for a given
   # video sequence
@@ -56,13 +56,13 @@ Pipeline:
   # this is the output directory in which
   # every generated data of the pipeline
   # is saved into
-  data_output_folder: "/path/to/screenshots"
+  data_output_folder: "/home/lingxiao/data/projects/lingxiao/sharpy/output"
   # make a screenshot of the
   # scene every frame
-  save_screenshot: False
+  save_screenshot: True
   # whether to save the estimated
   # MANO params every frame
-  save_MANO_params: False
+  save_MANO_params: True
   # save the RGB image with
   # OpenPose keypoints rendered
   # on top
@@ -105,7 +105,7 @@ Network:
   preserve_aspect_ratio: True
   # path to the base directory where the network weights
   # are located
-  weights: "<path-to-sharpy-repository>/data/yolact_weights/"
+  weights: "/home/lingxiao/data/projects/lingxiao/sharpy/data/yolact_weights/"
   # manually pad the predicted bounding box
   # coordinates of the CURRENT frame
   # to be used for further processing within
@@ -127,8 +127,8 @@ OpenPose:
   bb_pad_y: 100
   # path to the network weights
   # and protofile of OpenPose
-  weights: "<path-to-sharpy-repository>/openpose_weights/pose_iter_102000.caffemodel"
-  protofile: "<path-to-sharpy-repository>/openpose_weights/pose_deploy.prototxt"
+  weights: "/home/lingxiao/data/projects/lingxiao/sharpy/openpose_weights/pose_iter_102000.caffemodel"
+  protofile: "/home/lingxiao/data/projects/lingxiao/sharpy/openpose_weights/pose_deploy.prototxt"
   # threshold that is applied to the
   # confidence score of a keypoint to
   # detect whether this keypoint is
@@ -148,7 +148,7 @@ Debug:
   # do not automatically process the full video
   # but stop at every image and continue
   # manually
-  stop_through_sequence: True
+  stop_through_sequence: False
   # render the hands
   show_hands: True
   # render input RGB-D data
@@ -227,11 +227,11 @@ Optimization:
   # the tracking is considered as 'failed'
   # if the relative loss between current frame and last frame
   # exceeds this threshold 
-  loss_relative_threshold: 2 # 5 # 100, 1000 
+  loss_relative_threshold: 5 # 2 # 5 # 100, 1000
   # the tracking is considered as 'failed'
   # if the absolute loss of the current frame
-  # exceeds this threshold 
-  loss_absolute_threshold: 1 # 2 # 60
+  # exceeds this threshold
+  loss_absolute_threshold: 60 # 1 # 2 # 60
   # how many iterations the whole optimization stage
   # (including stage 0,1,2, ...)
   # is running

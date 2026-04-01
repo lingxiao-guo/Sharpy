@@ -2,8 +2,10 @@
 #include <reclib/dnn/dnn_utils.h>
 
 namespace torch {
-torch::indexing::Slice All;
-c10::nullopt_t None{0};
+// In PyTorch 2.6+, None and Slice are already defined in at::indexing
+// Re-export them into the torch namespace for backward compatibility
+using at::indexing::None;
+const torch::indexing::Slice All;
 
 }  // namespace torch
 #endif  // HAS_DNN_MODULE

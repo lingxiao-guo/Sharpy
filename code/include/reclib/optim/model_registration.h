@@ -45,53 +45,12 @@ Sophus::SE3<float> registerMANO2Pointcloud(
     vec3* pca_mean = nullptr, vec3* mano_mean = nullptr);
 #endif  // HAS_OPENCV_MODULE
 
+// SMPL2SDFFunctor commented out: references removed LBS function
+// #if HAS_OPENCV_MODULE
+// template <class ModelConfig>
+// struct SMPL2SDFFunctor { ... };
+
 #if HAS_OPENCV_MODULE
-template <class ModelConfig>
-struct SMPL2SDFFunctor {
-  const reclib::models::ModelInstance<ModelConfig>& instance;
-  mat4 smpl_affine;
-  unsigned int vertex_index;
-
-  const CpuMat_<short2>& voxel_volume;
-  float voxel_scale;
-  ivec3 grid_size;
-
-  template <typename T>
-  bool operator()(const T* const shape, const T* const pose_incr,
-                  T* residual) const {
-    Eigen::Map<const Eigen::Vector<T, ModelConfig::n_shape_blends()>> shape_map(
-        shape);
-    Eigen::Map<const Eigen::Vector<T, ModelConfig::n_explicit_joints() * 3>>
-        pose_incr_map(pose_incr);
-
-    Eigen::Matrix<T, 1, 3> verts;
-    LBS<T, ModelConfig>(instance.model, shape_map, pose_incr_map,
-                        instance.pose().template cast<T>(), verts, true,
-                        vertex_index);
-
-    Eigen::Vector<T, 3> vertex =
-        (smpl_affine.cast<T>() * verts.transpose().homogeneous())
-            .template head<3>();
-
-    Eigen::Vector<T, 3> vertex_in_grid = vertex / T(voxel_scale);
-    T x = vertex_in_grid[0];
-    T y = vertex_in_grid[1];
-    T z = vertex_in_grid[2];
-    ivec3 grid_index(get_integer_part(x), get_integer_part(y),
-                     get_integer_part(z));
-    T res = T(0);
-    bool has_tsdf = reclib::interpolate_trilinearly<T>(
-        vertex_in_grid, voxel_volume, grid_size, res, grid_index);
-
-    if (has_tsdf) {
-      residual[0] = res * res;
-    } else {
-      residual[0] = T(2);
-    }
-
-    return true;
-  }
-};
 
 // Localizes the mean of the hand shape
 // Underlying assumption: the point cloud is an arm
